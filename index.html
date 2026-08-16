@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Scittle Palmer Penguins Multi-Plot Dashboard</title>
+
+  <!-- 1. Plotly, D3, & React Dependencies -->
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- 2. Scittle Core & Reagent Plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/scittle@0.6.15/dist/scittle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/scittle@0.6.15/dist/scittle.reagent.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 20px; background: #f8fafc; }
+    .card { background: white; padding: 24px; border-radius: 8px; max-width: 850px; margin: 0 auto 20px auto; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .controls { display: flex; gap: 16px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+    .loading { font-weight: bold; color: #2563eb; }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+
+  <script type="application/x-scittle">
+    (ns main
+      (:require [reagent.core :as r]
+                [clojure.string :as str]))
+
+    ;; App State
+    (def penguins-data (r/atom nil))
+    (def loading? (r/atom true))
+    (def selected-islands (r/atom #{"Torgersen" "Biscoe" "Dream"}))
+
+    ;; Fetch CSV directly from GitHub
+    (defn fetch-penguins []
+      (-> (js/fetch "https://raw.githubusercontent.com/allisonhorst/palmerpenguins/main/inst/extdata/penguins.csv")
+          (.then #(.text %))
+          (.then (fn [csv-text]
+                   (let [parsed (js/d3.csvParse csv-text js/d3.autoType)]
+                     (reset! penguins-data (js->clj parsed :keywordize-keys true))
+                     (reset! loading? false))))
+          (.catch (fn [err]
+                    (js/console.error "Error loading CSV:" err)
+                    (reset! loading? false)))))
+
+    ;; Helper: Filter valid records by islands
+    (defn get-filtered-data [data islands]
+      (filter (fn [p]
+                (and (number? (:bill_length_mm p))
+                     (number? (:bill_depth_mm p))
+                     (number? (:flipper_length_mm p))
+                     (number? (:body_mass_g p))
+                     (contains? islands (:island p))))
+              data))
+
+    ;; --- 1. Scatter Plot ---
+    (defn build-scatter-traces [data islands]
+      (let [filtered (get-filtered-data data islands)
+            grouped (group-by :species filtered)]
+        (map (fn [[species records]]
+               {:name species
+                :type "scatter"
+                :mode "markers"
+                :x (map :bill_length_mm records)
+                :y (map :bill_depth_mm records)
+                :marker {:size 8 :opacity 0.8}
+                :hovertemplate "<b>Bill Length:</b> %{x} mm<br><b>Bill Depth:</b> %{y} mm<extra></extra>"})
+             grouped)))
+
+    (defn render-scatter [el data islands]
+      (when (and el (seq data))
+        (let [traces (clj->js (build-scatter-traces data islands))
+              layout #js {:title "Bill Length vs. Bill Depth by Species"
+                          :xaxis #js {:title "Bill Length (mm)"}
+                          :yaxis #js {:title "Bill Depth (mm)"}
+                          :hovermode "closest"
+                          :margin #js {:t 40 :b 50 :l 50 :r 20}}]
+          (.react js/Plotly el traces layout))))
+
+    (defn plotly-scatter-component []
+      (let [data @penguins-data
+            islands @selected-islands]
+        (r/with-let [dom-node (r/atom nil)]
+          [:div {:ref #(do (reset! dom-node %)
+                           (render-scatter % data islands))
+                 :style {:width "100%" :height "400px"}}])))
+
+    ;; --- 2. Parallel Coordinates Plot ---
+    (defn build-parcoords-trace [data islands]
+      (let [filtered (get-filtered-data data islands)
+            bill-lens (map :bill_length_mm filtered)
+            bill-deps (map :bill_depth_mm filtered)
+            flip-lens (map :flipper_length_mm filtered)
+            masses    (map :body_mass_g filtered)]
+        [{:type "parcoords"
+          :line {:color masses
+                 :colorscale "Viridis"
+                 :showscale true
+                 :colorbar {:title "Body Mass (g)"}}
+          :dimensions [{:label "Bill Length (mm)" :values bill-lens}
+                       {:label "Bill Depth (mm)"  :values bill-deps}
+                       {:label "Flipper Length (mm)" :values flip-lens}
+                       {:label "Body Mass (g)"    :values masses}]}]))
+
+    (defn render-parcoords [el data islands]
+      (when (and el (seq data))
+        (let [traces (clj->js (build-parcoords-trace data islands))
+              layout #js {:title "Multi-Metric Parallel Coordinates"
+                          :margin #js {:t 60 :b 40 :l 60 :r 60}}]
+          (.react js/Plotly el traces layout))))
+
+    (defn plotly-parcoords-component []
+      (let [data @penguins-data
+            islands @selected-islands]
+        (r/with-let [dom-node (r/atom nil)]
+          [:div {:ref #(do (reset! dom-node %)
+                           (render-parcoords % data islands))
+                 :style {:width "100%" :height "400px"}}])))
+
+    ;; --- 3. Violin Plot ---
+    (defn build-violin-traces [data islands]
+      (let [filtered (get-filtered-data data islands)
+            grouped (group-by :species filtered)]
+        (map (fn [[species records]]
+               {:type "violin"
+                :name species
+                :y (map :flipper_length_mm records)
+                :points "all"
+                :jitter 0.3
+                :pointpos -1.8
+                :box {:visible true}
+                :meanline {:visible true}})
+             grouped)))
+
+    (defn render-violin [el data islands]
+      (when (and el (seq data))
+        (let [traces (clj->js (build-violin-traces data islands))
+              layout #js {:title "Flipper Length Distribution by Species (Violin Plot)"
+                          :yaxis #js {:title "Flipper Length (mm)"}
+                          :margin #js {:t 40 :b 50 :l 50 :r 20}}]
+          (.react js/Plotly el traces layout))))
+
+    (defn plotly-violin-component []
+      (let [data @penguins-data
+            islands @selected-islands]
+        (r/with-let [dom-node (r/atom nil)]
+          [:div {:ref #(do (reset! dom-node %)
+                           (render-violin % data islands))
+                 :style {:width "100%" :height "400px"}}])))
+
+    ;; --- Main App View ---
+    (defn app []
+      (r/with-let [_ (fetch-penguins)]
+        [:div
+         [:div.card
+          [:h2 "Palmer Penguins Explorer"]
+          (if @loading?
+            [:div.loading "Downloading CSV data from GitHub..."]
+            [:div.controls
+             [:strong "Filter Islands: "]
+             (for [island ["Torgersen" "Biscoe" "Dream"]]
+               ^{:key island}
+               [:label {:style {:margin-left "8px"}}
+                [:input {:type "checkbox"
+                         :checked (contains? @selected-islands island)
+                         :on-change #(if (contains? @selected-islands island)
+                                       (swap! selected-islands disj island)
+                                       (swap! selected-islands conj island))}]
+                (str " " island)])])]
+
+         (when-not @loading?
+           [:div
+            [:div.card
+             [plotly-scatter-component]]
+            [:div.card
+             [plotly-parcoords-component]]
+            [:div.card
+             [plotly-violin-component]]])]))
+
+    ;; Mount React App
+    (let [root (.createRoot js/ReactDOM (.getElementById js/document "app"))]
+      (.render root (r/as-element [app])))
+  </script>
+</body>
+</html>
